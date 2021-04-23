@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import queue
+import requests
 import shutil
 import sys
 import time
@@ -33,9 +34,9 @@ class Exporter:
         self._rate_limit = RATE_LIMIT_START
         self._rate_limit_queue = queue.Queue()
 
-        slack_token = os.environ["SLACK_BOT_TOKEN"]
+        self.slack_token = os.environ["SLACK_BOT_TOKEN"]
 
-        self.client = WebClient(token=slack_token)
+        self.client = WebClient(token=self.slack_token)
 
         now = datetime.datetime.now()
         self.base_directory = 'archives/{}'.format(now.strftime('%d%B%Y'))
@@ -76,6 +77,9 @@ class Exporter:
         if self._user_nickname_map is None:
             self._user_nickname_map = self.get_user_nickname_map()
         return self._user_nickname_map
+
+    def build_directory(self, directory):
+        return '{}/{}'.format(self.base_directory, directory)
 
     def call_with_rate_limit(self, func):
         done = False
@@ -362,6 +366,8 @@ class Exporter:
         else:
             logging.info('Already done, skipping')
 
+        self.get_files(channel, directory)
+
     def get_channel_messages(self):
         filename = 'channels_to_export.json'
 
@@ -420,6 +426,101 @@ class Exporter:
                 sort_keys=True
             )
 
+    def _get_file(self, url, filename):
+        repeat = True
+
+        while repeat:
+            resp = requests.get(url, headers={'Authorization': 'Bearer %s' % self.slack_token})
+
+            if resp.status_code == 200:
+                repeat = False
+
+                logging.debug('Saving file as %s', filename)
+                with open(filename, 'wb+') as outf:
+                    outf.write(resp.content)
+            else:
+                import pdb; pdb.set_trace()
+
+    def _check_filename(self, directory, name):
+        exists = False
+        directory = self.build_directory(directory)
+        filename = '{}/{}'.format(directory, name)
+
+        if os.path.exists(filename):
+            logging.debug('File already exists: %s', filename)
+            exists = True
+            # parts = filename.split('.')
+            # filename = '.'.join(parts[:-1]) + '-2.' + parts[-1]
+            # logging.debug('New filename: %s', filename)
+
+        return filename, exists
+
+    def get_file(self, file, directory):
+        name = '(' + file['id'] + ') ' + file['name']
+        url_private = file['url_private']
+        filename, exists = self._check_filename(directory, name)
+        if exists:
+            logging.info('Skipping file because it exists: %s', filename)
+        else:
+            self._get_file(url_private, filename)
+
+        converted_pdf = file.get('converted_pdf')
+        if converted_pdf:
+            filename, exists = self._check_filename(directory, name + '.pdf')
+            if exists:
+                logging.info('Skipping file because it exists: %s', filename)
+            else:
+                self._get_file(converted_pdf, filename)
+
+    def _get_files(self, channel, directory):
+        channel_id = channel['id']
+        has_more = True
+        kwargs = {}
+
+        name = channel.get('name', channel_id)
+
+        func_partial = partial(self.client.files_list, channel=channel_id)
+
+        while has_more:
+            logging.debug("Getting next of %s with %s", str(func_partial), kwargs)
+            logging.debug("Channel: %s (%s)", name, channel_id)
+            caller = partial(func_partial, **kwargs)
+            resp = self.call_with_rate_limit(caller)
+            data = resp.data
+
+            filename = '{}/{}'.format(directory, channel_id)
+            self.write_file(filename, data, append=True)
+
+            for file in data['files']:
+                self.get_file(file, directory)
+
+            paging = data['paging']
+            current_page = paging['page']
+            total_pages = paging['pages']
+            if current_page < total_pages:
+                kwargs['page'] = current_page + 1
+            else:
+                has_more = False
+
+    def get_files(self, channel, directory):
+        channel_id = channel['id']
+        directory = '{}/{}'.format(directory, 'files')
+
+        done_filename = '{}/{}'.format(directory, 'done')
+        full_directory = '{}/{}'.format(self.base_directory, directory)
+        full_filename = '{}/{}'.format(full_directory, 'done')
+        logging.debug('Full filename %s', full_filename)
+
+        if not os.path.exists(full_filename):
+            if os.path.exists(full_directory):
+                logging.info('Partial conversation exists. Removing %s', full_directory)
+                shutil.rmtree(full_directory)
+            logging.info('Getting files for %s', channel_id)
+            self._get_files(channel, directory)
+            self.write_file(done_filename, '', extension=False)
+        else:
+            logging.info('Already done, skipping')
+
 
 def is_yes(value):
     return str(value).lower() in ('yes', 'y')
@@ -436,7 +537,7 @@ Then hit enter.
     input("Press Enter to continue...")
 
 
-def main():
+def main(args):
     if not os.environ.get('SLACK_BOT_TOKEN'):
         print("You must set the 'SLACK_BOT_TOKEN' environment variable")
         sys.exit(1)
@@ -445,18 +546,25 @@ def main():
 
     exporter.get_conversation_members_map()
 
-    if is_yes(input('Do you want to export channel messages? [y/N]')):
+    if args.all or args.export_channels or is_yes(input('Do you want to export channel messages? [y/N]')):
         exporter.generate_channels_to_export_template()
-        prompt_for_channel_names()
+        if not args.all or args.export_channels:
+            prompt_for_channel_names()
         exporter.get_channel_messages()
 
-    if is_yes(input('Do you want to export private messages? [y/N]')):
+    if args.all or args.export_private or is_yes(input('Do you want to export private messages? [y/N]')):
         exporter.get_private_messages()
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Export data from Slack')
-    parser.add_argument("-v", "--verbose", help="increase output verbosity",
+    parser.add_argument("-v", "--verbose", help="Increase verbosity (e.g. debug level)",
+                        action="store_true")
+    parser.add_argument("--all", help="Get all without prompt",
+                        action="store_true")
+    parser.add_argument("--export-channels", help="Export channels without prompt",
+                        action="store_true")
+    parser.add_argument("--export-private", help="Export private messages without prompt",
                         action="store_true")
 
     args = parser.parse_args()
@@ -465,8 +573,13 @@ def parse_args():
         logging.info('Setting log level to debug')
         logging.getLogger().setLevel(logging.DEBUG)
 
+    logging.debug('Args: %s', args)
+
+    return args
+
 
 if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s - %(message)s', datefmt='%d-%b-%y %H:%M:%S', level=logging.INFO)
-    parse_args()
-    main()
+    args = parse_args()
+    print(args)
+    main(args)
