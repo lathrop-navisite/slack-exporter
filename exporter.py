@@ -93,6 +93,11 @@ class Exporter:
                 if exc.response['error'] == 'ratelimited':
                     logging.info('Rate limited. Sleeping for 5 seconds')
                     time.sleep(5)
+            except Exception as exc:
+                if 'Connection reset by peer' in str(exc):
+                    # This is for Steve. I never saw this error
+                    logging.warning('Connection reset by peer. Sleeping for 5 seconds')
+                    time.sleep(5)
 
     def rate_limit(self):
         now = datetime.datetime.now()
