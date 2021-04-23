@@ -134,3 +134,4 @@ dmypy.json
 archives/
 
 channels_to_export.json
+channels_to_export_template.json
