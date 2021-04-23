@@ -521,6 +521,18 @@ class Exporter:
         else:
             logging.info('Already done, skipping')
 
+    def get_emojis(self):
+        emoji_directory = self.build_directory('emojis/')
+
+        emoji_call = self.client.emoji_list()
+        emoji_data = emoji_call.data
+        self.write_file('emojis/emojis', emoji_data, append=False, is_json=True, format=True)
+        for name, url in emoji_data['emoji'].items():
+            if url.startswith('http'):
+                extension = url.split('.')[-1]
+                filename = emoji_directory + name + '.' + extension
+                self._get_file(url, filename)
+
 
 def is_yes(value):
     return str(value).lower() in ('yes', 'y')
@@ -543,6 +555,9 @@ def main(args):
         sys.exit(1)
 
     exporter = Exporter()
+    exporter.get_emojis()
+    if args.only_emojis:
+        return
 
     exporter.get_conversation_members_map()
 
@@ -565,6 +580,8 @@ def parse_args():
     parser.add_argument("--export-channels", help="Export channels without prompt",
                         action="store_true")
     parser.add_argument("--export-private", help="Export private messages without prompt",
+                        action="store_true")
+    parser.add_argument("--only-emojis", help="Only Export Emojis",
                         action="store_true")
 
     args = parser.parse_args()
