@@ -25,6 +25,7 @@ Export Slack
     * `mpim:history`
     * `mpim:read`
     * `users:read`
+    * `emoji:read`
 1. Scroll back to the top and click "Install to Workspace" or "Reinstall to Workspace" if this was a pre-existing app
 1. On the next screen, click "Allow"
 1. Copy the "User OAuth Token"
